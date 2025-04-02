@@ -61,7 +61,7 @@ the connection metadata is structured as follows:
 
 An example usage of the SQLExecuteQueryOperator to connect to Apache Hive is as follows:
 
-.. exampleinclude:: /../../providers/apache/hive/tests/system/apache/hive/example_hive.py
+.. exampleinclude:: /../tests/system/apache/hive/example_hive.py
     :language: python
     :start-after: [START howto_operator_hive]
     :end-before: [END howto_operator_hive]
