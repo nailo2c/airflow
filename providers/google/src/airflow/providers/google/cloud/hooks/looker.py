@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from looker_sdk.rtl import api_settings, auth_session, requests_transport, serialize
 from looker_sdk.sdk.api40 import methods as methods40
@@ -43,34 +43,6 @@ class LookerHook(BaseHook):
     default_conn_name = "looker_default"
     conn_type = "gcp_looker"
     hook_name = "Google Looker"
-
-    @classmethod
-    def get_connection_form_widgets(cls) -> dict[str, Any]:
-        """Return connection widgets to add to Looker connection form."""
-        from flask_appbuilder.fieldwidgets import (
-            BS3BooleanFieldWidget,
-            BS3PasswordFieldWidget,
-            BS3TextFieldWidget,
-        )
-        from flask_babel import lazy_gettext
-        from wtforms import BooleanField, PasswordField, StringField
-
-        return {
-            "client_id": StringField(lazy_gettext("Client ID"), widget=BS3TextFieldWidget()),
-            "client_secret": PasswordField(lazy_gettext("Client Secret"), widget=BS3PasswordFieldWidget()),
-            "verify_ssl": BooleanField(lazy_gettext("Verify SSL"), widget=BS3BooleanFieldWidget()),
-        }
-
-    @classmethod
-    def get_ui_field_behaviour(cls) -> dict[str, Any]:
-        """Return custom UI field behaviour for Looker connection."""
-        return {
-            "hidden_fields": ["login", "password", "schema", "port"],
-            "relabeling": {},
-            "placeholders": {
-                "host": "api.company.looker.com",
-            },
-        }
 
     def __init__(
         self,
