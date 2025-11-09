@@ -37,6 +37,13 @@ from airflow.utils.providers_configuration_loader import providers_configuration
 @providers_configuration_loaded
 def show_config(args):
     """Show current application configuration."""
+    if args.defaults_no_comments:
+        comment_out_everything = False
+        only_defaults = True
+    else:
+        comment_out_everything = args.comment_out_everything or args.defaults
+        only_defaults = args.defaults
+
     with StringIO() as output:
         conf.write(
             output,
@@ -46,8 +53,8 @@ def show_config(args):
             include_sources=args.include_sources and not args.defaults,
             include_env_vars=args.include_env_vars or args.defaults,
             include_providers=not args.exclude_providers,
-            comment_out_everything=args.comment_out_everything or args.defaults,
-            only_defaults=args.defaults,
+            comment_out_everything=comment_out_everything,
+            only_defaults=only_defaults,
         )
         code = output.getvalue()
     if should_use_colors(args):

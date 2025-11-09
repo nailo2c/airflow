@@ -301,6 +301,12 @@ ARG_DEFAULTS = Arg(
     " includes descriptions, examples, variables. Comment out everything.",
     action="store_true",
 )
+ARG_DEFAULTS_NO_COMMENTS = Arg(
+    ("-n", "--defaults-no-comments"),
+    help="Show only defaults - do not include local configuration, sources,"
+    " includes descriptions, examples, variables. No comments.",
+    action="store_true",
+)
 ARG_VERBOSE = Arg(("-v", "--verbose"), help="Make logging output more verbose", action="store_true")
 ARG_LOCAL = Arg(("-l", "--local"), help="Run the task using the LocalExecutor", action="store_true")
 ARG_POOL = Arg(("--pool",), "Resource pool to use")
@@ -1717,6 +1723,7 @@ CONFIG_COMMANDS = (
             ARG_EXCLUDE_PROVIDERS,
             ARG_DEFAULTS,
             ARG_VERBOSE,
+            ARG_DEFAULTS_NO_COMMENTS,
         ),
     ),
     ActionCommand(

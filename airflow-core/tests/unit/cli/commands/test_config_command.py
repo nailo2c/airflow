@@ -16,9 +16,11 @@
 # under the License.
 from __future__ import annotations
 
+import configparser
 import os
 import re
 import shutil
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -208,6 +210,23 @@ class TestCliConfigList:
         lines = output.splitlines()
         bad_lines = [l for l in lines if l and not (not l.strip() or l.startswith(("#", "[")))]  # noqa: E741
         assert bad_lines == []
+
+    def test_defaults_no_comments_parseable(self, tmp_path, stdout_capture):
+        with stdout_capture as temp_stdout:
+            config_command.show_config(
+                self.parser.parse_args(["config", "list", "--color", "off", "--defaults-no-comments"])
+            )
+        output = temp_stdout.getvalue()
+
+        cfg_file: Path = tmp_path / "airflow_no_comments.cfg"
+        cfg_file.write_text(output)
+
+        parser = configparser.ConfigParser()
+        parser.read(cfg_file)
+
+        assert parser.has_option("dag_processor", "dag_bundle_config_list")
+        value = parser.get("dag_processor", "dag_bundle_config_list")
+        assert '"dags-folder"' in value
 
 
 class TestCliConfigGetValue:
