@@ -110,6 +110,7 @@ class ADLSToGCSOperator(ADLSListOperator):
         *,
         src_adls: str,
         dest_gcs: str,
+        file_system_name: str,
         azure_data_lake_conn_id: str,
         gcp_conn_id: str = "google_cloud_default",
         replace: bool = False,
@@ -117,7 +118,12 @@ class ADLSToGCSOperator(ADLSListOperator):
         google_impersonation_chain: str | Sequence[str] | None = None,
         **kwargs,
     ) -> None:
-        super().__init__(path=src_adls, azure_data_lake_conn_id=azure_data_lake_conn_id, **kwargs)
+        super().__init__(
+            file_system_name=file_system_name,
+            path=src_adls,
+            azure_data_lake_conn_id=azure_data_lake_conn_id,
+            **kwargs,
+        )
 
         self.src_adls = src_adls
         self.dest_gcs = dest_gcs
