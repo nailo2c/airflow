@@ -677,7 +677,7 @@ class TestExecuteCallbacks:
             bundle_version="some_commit_hash",
             is_failure_callback=False,
             msg=None,
-        )
+        )]
         log = structlog.get_logger()
         dagbag = MagicMock()
 
