@@ -669,7 +669,7 @@ def test_import_error_updates_timestamps(session):
 
 class TestExecuteCallbacks:
     def test_execute_callbacks_locks_bundle_version(self):
-        request = DagCallbackRequest(
+        callbacks = [DagCallbackRequest(
             filepath="test.py",
             dag_id="test_dag",
             run_id="test_run",
