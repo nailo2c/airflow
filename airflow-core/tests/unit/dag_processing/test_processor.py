@@ -685,7 +685,7 @@ class TestExecuteCallbacks:
             patch("airflow.dag_processing.processor.BundleVersionLock") as mock_lock,
             patch("airflow.dag_processing.processor._execute_dag_callbacks") as mock_execute,
         ):
-            _execute_callbacks(dagbag, [request], log)
+            _execute_callbacks(dagbag, callbacks, log)
 
         mock_lock.assert_called_once_with(bundle_name="testing", bundle_version="some_commit_hash")
         mock_lock.return_value.__enter__.assert_called_once()
