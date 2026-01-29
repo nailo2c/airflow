@@ -669,15 +669,17 @@ def test_import_error_updates_timestamps(session):
 
 class TestExecuteCallbacks:
     def test_execute_callbacks_locks_bundle_version(self):
-        callbacks = [DagCallbackRequest(
-            filepath="test.py",
-            dag_id="test_dag",
-            run_id="test_run",
-            bundle_name="testing",
-            bundle_version="some_commit_hash",
-            is_failure_callback=False,
-            msg=None,
-        )]
+        callbacks = [
+            DagCallbackRequest(
+                filepath="test.py",
+                dag_id="test_dag",
+                run_id="test_run",
+                bundle_name="testing",
+                bundle_version="some_commit_hash",
+                is_failure_callback=False,
+                msg=None,
+            )
+        ]
         log = MagicMock(spec=FilteringBoundLogger)
         dagbag = MagicMock(spec=DagBag)
 
