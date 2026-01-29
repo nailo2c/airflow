@@ -678,8 +678,8 @@ class TestExecuteCallbacks:
             is_failure_callback=False,
             msg=None,
         )]
-        log = structlog.get_logger()
-        dagbag = MagicMock()
+        log = MagicMock(spec=FilteringBoundLogger)
+        dagbag = MagicMock(spec=DagBag)
 
         with (
             patch("airflow.dag_processing.processor.BundleVersionLock") as mock_lock,
@@ -690,7 +690,7 @@ class TestExecuteCallbacks:
         mock_lock.assert_called_once_with(bundle_name="testing", bundle_version="some_commit_hash")
         mock_lock.return_value.__enter__.assert_called_once()
         mock_lock.return_value.__exit__.assert_called_once()
-        mock_execute.assert_called_once_with(dagbag, request, log)
+        mock_execute.assert_called_once_with(dagbag, callbacks[0], log)
 
 
 class TestExecuteDagCallbacks:
