@@ -45,6 +45,8 @@ class ADLSToGCSOperator(ADLSListOperator):
     :param src_adls: The Azure Data Lake path to find the objects (templated)
     :param dest_gcs: The Google Cloud Storage bucket and prefix to
         store the objects. (templated)
+    :param file_system_name: Name of the file system (container) in ADLS Gen2.
+        This is passed via ``**kwargs`` to the parent ``ADLSListOperator``.
     :param replace: If true, replaces same-named files in GCS
     :param gzip: Option to compress file for upload
     :param azure_data_lake_conn_id: The connection ID to use when
@@ -110,7 +112,6 @@ class ADLSToGCSOperator(ADLSListOperator):
         *,
         src_adls: str,
         dest_gcs: str,
-        file_system_name: str,
         azure_data_lake_conn_id: str,
         gcp_conn_id: str = "google_cloud_default",
         replace: bool = False,
@@ -118,6 +119,15 @@ class ADLSToGCSOperator(ADLSListOperator):
         google_impersonation_chain: str | Sequence[str] | None = None,
         **kwargs,
     ) -> None:
+        file_system_name = kwargs.pop("file_system_name", None)
+        if file_system_name is None:
+            raise TypeError(
+                "The 'file_system_name' parameter is required. "
+                "ADLSListOperator has been migrated from Azure Data Lake Storage Gen1 (retired) "
+                "to Gen2, which requires specifying a file system name. "
+                "Please add file_system_name='your-container-name' to your operator instantiation."
+            )
+
         super().__init__(
             file_system_name=file_system_name,
             path=src_adls,
