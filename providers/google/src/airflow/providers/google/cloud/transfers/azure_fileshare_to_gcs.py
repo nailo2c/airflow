@@ -94,7 +94,7 @@ class AzureFileShareToGCSOperator(BaseOperator):
         replace: bool = False,
         gzip: bool = False,
         google_impersonation_chain: str | Sequence[str] | None = None,
-        return_gcs_uris: bool = False,
+        return_gcs_uris: bool | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -116,7 +116,16 @@ class AzureFileShareToGCSOperator(BaseOperator):
         self.replace = replace
         self.gzip = gzip
         self.google_impersonation_chain = google_impersonation_chain
-        self.return_gcs_uris = return_gcs_uris
+        if return_gcs_uris is None:
+            self.return_gcs_uris = False
+            warnings.warn(
+                "Returning a list of Azure FileShare filenames from AzureFileShareToGCSOperator is deprecated and "
+                "will change to list[str] of GCS URIs in a future release. Set return_gcs_uris=True to opt in.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        else:
+            self.return_gcs_uris = return_gcs_uris
 
     def _check_inputs(self) -> None:
         if self.dest_gcs and not gcs_object_is_directory(self.dest_gcs):
@@ -192,12 +201,6 @@ class AzureFileShareToGCSOperator(BaseOperator):
             self.log.info("There are no new files to sync. Have a nice day!")
             self.log.info("In sync, no files needed to be uploaded to Google Cloud Storage")
 
-        if self.return_gcs_uris:
-            return uploaded_gcs_uris
-        warnings.warn(
-            "Returning a list of Azure FileShare filenames from AzureFileShareToGCSOperator is deprecated and "
-            "will change to list[str] of GCS URIs in a future release. Set return_gcs_uris=True to opt in.",
-            AirflowProviderDeprecationWarning,
-            stacklevel=2,
-        )
-        return files
+        if not self.return_gcs_uris:
+            return files
+        return uploaded_gcs_uris

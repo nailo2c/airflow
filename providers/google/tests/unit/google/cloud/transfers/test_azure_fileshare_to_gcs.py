@@ -22,7 +22,7 @@ import pytest
 
 from airflow.providers.google.cloud.transfers.azure_fileshare_to_gcs import AzureFileShareToGCSOperator
 
-pytestmark = pytest.mark.filterwarnings("ignore::airflow.exceptions.AirflowProviderDeprecationWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
 
 TASK_ID = "test-azure-fileshare-to-gcs"
 AZURE_FILESHARE_SHARE = "test-share"

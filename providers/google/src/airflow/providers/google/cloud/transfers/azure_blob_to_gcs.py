@@ -18,11 +18,9 @@
 from __future__ import annotations
 
 import tempfile
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from airflow.exceptions import AirflowProviderDeprecationWarning
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.providers.google.version_compat import BaseOperator
 
@@ -61,8 +59,10 @@ class AzureBlobStorageToGCSOperator(BaseOperator):
         If set as a sequence, the identities from the list must grant
         Service Account Token Creator IAM role to the directly preceding identity, with first
         account from the list granting this role to the originating account.
-    :param return_gcs_uris: If True, return a list of GCS URIs. If False (default), return the legacy
-        string value and emit a deprecation warning.
+    :param unwrap_single: If True, unwrap a single-element result list into a plain string value
+        for backward compatibility. If False, always return a list of GCS URIs.
+        If not explicitly provided, defaults to True and emits a FutureWarning that
+        the default will change to False in a future release.
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class AzureBlobStorageToGCSOperator(BaseOperator):
         filename: str,
         gzip: bool,
         impersonation_chain: str | Sequence[str] | None = None,
-        return_gcs_uris: bool = False,
+        unwrap_single: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -90,7 +90,18 @@ class AzureBlobStorageToGCSOperator(BaseOperator):
         self.filename = filename
         self.gzip = gzip
         self.impersonation_chain = impersonation_chain
-        self.return_gcs_uris = return_gcs_uris
+        if unwrap_single is None:
+            self.unwrap_single = True
+            import warnings
+
+            warnings.warn(
+                "The default value of `unwrap_single` will change from True to False in a future release. "
+                "Please set `unwrap_single` explicitly to avoid this warning.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        else:
+            self.unwrap_single = unwrap_single
 
     template_fields: Sequence[str] = (
         "blob_name",
@@ -128,15 +139,10 @@ class AzureBlobStorageToGCSOperator(BaseOperator):
                 self.blob_name,
                 self.bucket_name,
             )
-        if self.return_gcs_uris:
-            return [f"gs://{self.bucket_name}/{self.object_name}"]
-        warnings.warn(
-            "Returning a string from AzureBlobStorageToGCSOperator is deprecated and will "
-            "change to list[str] in a future release. Set return_gcs_uris=True to opt in.",
-            AirflowProviderDeprecationWarning,
-            stacklevel=2,
-        )
-        return f"gs://{self.bucket_name}/{self.object_name}"
+        gcs_uri = f"gs://{self.bucket_name}/{self.object_name}"
+        if self.unwrap_single:
+            return gcs_uri
+        return [gcs_uri]
 
     def get_openlineage_facets_on_start(self):
         from airflow.providers.common.compat.openlineage.facet import Dataset
