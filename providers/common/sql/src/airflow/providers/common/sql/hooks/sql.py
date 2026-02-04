@@ -35,16 +35,21 @@ try:
     from sqlalchemy.engine import make_url
     from sqlalchemy.exc import ArgumentError, NoSuchModuleError
 except ImportError:
-    create_engine = None
-    inspect = None
-    make_url = None
-    ArgumentError = Exception
-    NoSuchModuleError = Exception
+    create_engine = None  # type: ignore[assignment]
+    inspect = None  # type: ignore[assignment]
+    make_url = None  # type: ignore[assignment]
+    ArgumentError = Exception  # type: ignore[misc,assignment]
+    NoSuchModuleError = Exception  # type: ignore[misc,assignment]
 
 
-from airflow.exceptions import AirflowOptionalProviderFeatureException, AirflowProviderDeprecationWarning
+from airflow.exceptions import AirflowProviderDeprecationWarning
 from airflow.providers.common.compat.module_loading import import_string
-from airflow.providers.common.compat.sdk import AirflowException, BaseHook, conf
+from airflow.providers.common.compat.sdk import (
+    AirflowException,
+    AirflowOptionalProviderFeatureException,
+    BaseHook,
+    conf,
+)
 from airflow.providers.common.sql.dialects.dialect import Dialect
 from airflow.providers.common.sql.hooks import handlers
 
@@ -78,7 +83,7 @@ def fetch_all_handler(cursor) -> list[tuple] | None:
     return handlers.fetch_all_handler(cursor)
 
 
-def fetch_one_handler(cursor) -> list[tuple] | None:
+def fetch_one_handler(cursor) -> tuple | None:
     warnings.warn(WARNING_MESSAGE.format("fetch_one_handler"), DeprecationWarning, stacklevel=2)
 
     return handlers.fetch_one_handler(cursor)

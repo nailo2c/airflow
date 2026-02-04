@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import multiprocessing
 import operator
 import os
@@ -32,14 +33,29 @@ from functools import lru_cache, partial
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, delete, desc, exists, func, inspect, or_, select, text, tuple_, update
+from sqlalchemy import (
+    and_,
+    delete,
+    desc,
+    exists,
+    func,
+    inspect,
+    or_,
+    select,
+    text,
+    tuple_,
+    update,
+)
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload, lazyload, load_only, make_transient, selectinload
 from sqlalchemy.sql import expression
 
 from airflow import settings
+from airflow._shared.observability.metrics.dual_stats_manager import DualStatsManager
+from airflow._shared.observability.metrics.stats import Stats
 from airflow._shared.timezones import timezone
 from airflow.api_fastapi.execution_api.datamodels.taskinstance import DagRun as DRDataModel, TIRunContext
+from airflow.assets.evaluation import AssetEvaluator
 from airflow.callbacks.callback_requests import (
     DagCallbackRequest,
     DagRunContext,
@@ -63,23 +79,25 @@ from airflow.models.asset import (
     AssetWatcherModel,
     DagScheduleAssetAliasReference,
     DagScheduleAssetReference,
+    PartitionedAssetKeyLog,
     TaskInletAssetReference,
     TaskOutletAssetReference,
 )
 from airflow.models.backfill import Backfill
 from airflow.models.callback import Callback
-from airflow.models.dag import DagModel, get_next_data_interval, get_run_data_interval
+from airflow.models.dag import DagModel
 from airflow.models.dag_version import DagVersion
 from airflow.models.dagbag import DBDagBag
 from airflow.models.dagbundle import DagBundleModel
 from airflow.models.dagrun import DagRun
 from airflow.models.dagwarning import DagWarning, DagWarningType
+from airflow.models.pool import normalize_pool_name_for_stats
 from airflow.models.serialized_dag import SerializedDagModel
 from airflow.models.taskinstance import TaskInstance
 from airflow.models.team import Team
 from airflow.models.trigger import TRIGGER_FAIL_REPR, Trigger, TriggerFailureReason
-from airflow.observability.stats import Stats
 from airflow.observability.trace import DebugTrace, Trace, add_debug_span
+from airflow.serialization.definitions.assets import SerializedAssetUniqueKey
 from airflow.serialization.definitions.notset import NOTSET
 from airflow.ti_deps.dependencies_states import EXECUTION_STATES
 from airflow.timetables.assets import AssetAndTimeSchedule
@@ -106,13 +124,13 @@ if TYPE_CHECKING:
     from pendulum.datetime import DateTime
     from sqlalchemy.orm import Session
     from sqlalchemy.orm.interfaces import LoaderOption
+    from sqlalchemy.sql.selectable import Subquery
 
     from airflow._shared.logging.types import Logger
     from airflow.executors.base_executor import BaseExecutor
     from airflow.executors.executor_utils import ExecutorName
     from airflow.models.taskinstance import TaskInstanceKey
     from airflow.serialization.definitions.dag import SerializedDAG
-    from airflow.timetables.base import DataInterval
     from airflow.utils.sqlalchemy import CommitProhibitorGuard
 
 TI = TaskInstance
@@ -146,14 +164,6 @@ def _eager_load_dag_run_for_validation() -> tuple[LoaderOption, LoaderOption]:
         base.selectinload(AssetEvent.asset),
         base.selectinload(AssetEvent.source_aliases),
     )
-
-
-def _get_current_dag(dag_id: str, session: Session) -> SerializedDAG | None:
-    serdag = SerializedDagModel.get(dag_id=dag_id, session=session)  # grabs the latest version
-    if not serdag:
-        return None
-    serdag.load_op_links = False
-    return serdag.dag
 
 
 class ConcurrencyMap:
@@ -193,6 +203,16 @@ def _is_parent_process() -> bool:
     False if the current process is a child process started by multiprocessing.
     """
     return multiprocessing.current_process().name == "MainProcess"
+
+
+def _get_current_dr_task_concurrency(states: Iterable[TaskInstanceState]) -> Subquery:
+    """Get the dag_run IDs and how many tasks are in the provided states for each one."""
+    return (
+        select(TI.dag_id, TI.run_id, func.count("*").label("task_per_dr_count"))
+        .where(TI.state.in_(states))
+        .group_by(TI.dag_id, TI.run_id)
+        .subquery()
+    )
 
 
 class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
@@ -259,6 +279,17 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
     @provide_session
     def heartbeat_callback(self, session: Session = NEW_SESSION) -> None:
         Stats.incr("scheduler_heartbeat", 1, 1)
+
+    def _get_current_dag(self, dag_id: str, session: Session) -> SerializedDAG | None:
+        try:
+            serdag = SerializedDagModel.get(dag_id=dag_id, session=session)
+            if not serdag:
+                return None
+            serdag.load_op_links = False
+            return serdag.dag
+        except Exception:
+            self.log.exception("Failed to deserialize DAG '%s'", dag_id)
+            return None
 
     def register_signals(self) -> ExitStack:
         """Register signals that stop child processes."""
@@ -482,6 +513,13 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             num_starved_tasks = len(starved_tasks)
             num_starved_tasks_task_dagrun_concurrency = len(starved_tasks_task_dagrun_concurrency)
 
+            # This behaves the same as 'concurrency_map.load()' with the difference that
+            # 'load()' executes immediately while '_get_current_dr_task_concurrency' creates a
+            # subquery object that is then executed along with main query.
+            # The results of 'load()' aren't used again here because by the time the main query
+            # executes, there could be a change that will be ignored.
+            dr_task_concurrency_subquery = _get_current_dr_task_concurrency(states=EXECUTION_STATES)
+
             query = (
                 select(TI)
                 .with_hint(TI, "USE INDEX (ti_state)", dialect_name="mysql")
@@ -491,10 +529,23 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 .where(~DM.is_paused)
                 .where(TI.state == TaskInstanceState.SCHEDULED)
                 .where(DM.bundle_name.is_not(None))
-                .options(selectinload(TI.dag_model))
+                .join(
+                    dr_task_concurrency_subquery,
+                    and_(
+                        TI.dag_id == dr_task_concurrency_subquery.c.dag_id,
+                        TI.run_id == dr_task_concurrency_subquery.c.run_id,
+                    ),
+                    isouter=True,
+                )
+                .where(
+                    func.coalesce(dr_task_concurrency_subquery.c.task_per_dr_count, 0) < DM.max_active_tasks
+                )
                 .order_by(-TI.priority_weight, DR.logical_date, TI.map_index)
             )
 
+            # Starvation filters should be applied before computing the row_num based on the
+            # max_active_tasks limit. That way, starved dags and tasks that shouldn't run,
+            # won't occupy a slot.
             if starved_pools:
                 query = query.where(TI.pool.not_in(starved_pools))
 
@@ -509,6 +560,47 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                     tuple_(TI.dag_id, TI.run_id, TI.task_id).not_in(starved_tasks_task_dagrun_concurrency)
                 )
 
+            # Create a subquery with row numbers partitioned by dag_id and run_id.
+            # Different dags can have the same run_id but
+            # the dag_id combined with the run_id uniquely identify a run.
+            ranked_query = (
+                query.add_columns(
+                    func.row_number()
+                    .over(
+                        partition_by=[TI.dag_id, TI.run_id],
+                        order_by=[-TI.priority_weight, DR.logical_date, TI.map_index],
+                    )
+                    .label("row_num"),
+                    DM.max_active_tasks.label("dr_max_active_tasks"),
+                    # Create columns for the order_by checks here for sqlite.
+                    TI.priority_weight.label("priority_weight_for_ordering"),
+                    DR.logical_date.label("logical_date_for_ordering"),
+                    TI.map_index.label("map_index_for_ordering"),
+                )
+            ).subquery()
+
+            # Select only rows where row_number <= max_active_tasks.
+            query = (
+                select(TI)
+                .with_hint(TI, "USE INDEX (ti_state)", dialect_name="mysql")
+                .select_from(ranked_query)
+                .join(
+                    TI,
+                    (TI.dag_id == ranked_query.c.dag_id)
+                    & (TI.task_id == ranked_query.c.task_id)
+                    & (TI.run_id == ranked_query.c.run_id)
+                    & (TI.map_index == ranked_query.c.map_index),
+                )
+                .where(ranked_query.c.row_num <= ranked_query.c.dr_max_active_tasks)
+                # Add the order_by columns from the ranked query for sqlite.
+                .order_by(
+                    -ranked_query.c.priority_weight_for_ordering,
+                    ranked_query.c.logical_date_for_ordering,
+                    ranked_query.c.map_index_for_ordering,
+                )
+                .options(selectinload(TI.dag_model))
+            )
+
             query = query.limit(max_tis)
 
             timer = Stats.timer("scheduler.critical_section_query_duration")
@@ -516,7 +608,14 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
 
             try:
                 locked_query = with_row_locks(query, of=TI, session=session, skip_locked=True)
-                task_instances_to_examine: list[TI] = list(session.scalars(locked_query).all())
+                task_instances_to_examine = session.scalars(locked_query).all()
+
+                if self.log.isEnabledFor(logging.DEBUG):
+                    self.log.debug("Length of the tis to examine is %d", len(task_instances_to_examine))
+                    self.log.debug(
+                        "TaskInstance selection is: %s",
+                        dict(Counter(ti.dag_id for ti in task_instances_to_examine)),
+                    )
 
                 timer.stop(send=True)
             except OperationalError as e:
@@ -706,7 +805,9 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                     if executor_slots_available[executor_obj.name] <= 0:
                         self.log.debug(
                             "Not scheduling %s since its executor %s does not currently have any more "
-                            "available slots"
+                            "available slots",
+                            task_instance.task_id,
+                            executor_obj.name,
                         )
                         starved_tasks.add((task_instance.dag_id, task_instance.task_id))
                         continue
@@ -749,9 +850,12 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             )
 
         for pool_name, num_starving_tasks in pool_num_starving_tasks.items():
-            Stats.gauge(f"pool.starving_tasks.{pool_name}", num_starving_tasks)
-            # Same metric with tagging
-            Stats.gauge("pool.starving_tasks", num_starving_tasks, tags={"pool_name": pool_name})
+            DualStatsManager.gauge(
+                "pool.starving_tasks",
+                num_starving_tasks,
+                tags={},
+                extra_tags={"pool_name": pool_name},
+            )
 
         Stats.gauge("scheduler.tasks.starving", num_starving_tasks_total)
         Stats.gauge("scheduler.tasks.executable", len(executable_tis))
@@ -1206,6 +1310,12 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             # Any changes made by a dag_run instance, will be reflected to the dictionary of this class.
             DagRun.set_active_spans(active_spans=self.active_spans)
             BaseExecutor.set_active_spans(active_spans=self.active_spans)
+
+            Stats.initialize(
+                is_statsd_datadog_enabled=conf.getboolean("metrics", "statsd_datadog_enabled"),
+                is_statsd_on=conf.getboolean("metrics", "statsd_on"),
+                is_otel_on=conf.getboolean("metrics", "otel_on"),
+            )
 
             self._run_scheduler_loop()
 
@@ -1677,18 +1787,40 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
 
     def _create_dagruns_for_partitioned_asset_dags(self, session: Session) -> set[str]:
         partition_dag_ids: set[str] = set()
-        apdrs: Iterable[AssetPartitionDagRun] = session.scalars(
+
+        evaluator = AssetEvaluator(session)
+        for apdr in session.scalars(
             select(AssetPartitionDagRun).where(AssetPartitionDagRun.created_dag_run_id.is_(None))
-        )
-        for apdr in apdrs:
+        ):
             if TYPE_CHECKING:
                 assert apdr.target_dag_id
-            partition_dag_ids.add(apdr.target_dag_id)
-            dag = _get_current_dag(dag_id=apdr.target_dag_id, session=session)
-            if not dag:
+
+            if not (dag := self._get_current_dag(dag_id=apdr.target_dag_id, session=session)):
                 self.log.error("Dag '%s' not found in serialized_dag table", apdr.target_dag_id)
                 continue
 
+            asset_models = session.scalars(
+                select(AssetModel).where(
+                    exists(
+                        select(1).where(
+                            PartitionedAssetKeyLog.asset_id == AssetModel.id,
+                            PartitionedAssetKeyLog.asset_partition_dag_run_id == apdr.id,
+                        )
+                    )
+                )
+            )
+            statuses: dict[SerializedAssetUniqueKey, bool] = {
+                SerializedAssetUniqueKey.from_asset(a): True for a in asset_models
+            }
+            # todo: AIP-76 so, this basically works when we only require one partition from each asset to be there
+            #  but, we ultimately need rollup ability
+            #  that is, we need to ensure that whenever it is many -> one partitions, then we need to ensure
+            #  that all the required keys are there
+            #  one way to do this would be just to figure out what the count should be
+            if not evaluator.run(dag.timetable.asset_condition, statuses=statuses):
+                continue
+
+            partition_dag_ids.add(apdr.target_dag_id)
             run_after = timezone.utcnow()
             dag_run = dag.create_dagrun(
                 run_id=DagRun.generate_run_id(
@@ -1766,30 +1898,45 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         # as DagModel.dag_id and DagModel.next_dagrun
         # This list is used to verify if the DagRun already exist so that we don't attempt to create
         # duplicate DagRuns
-        existing_dagruns = (
-            session.execute(
-                select(DagRun.dag_id, DagRun.logical_date).where(
+        existing_dagrun_objects = (
+            session.scalars(
+                select(DagRun)
+                .where(
                     tuple_(DagRun.dag_id, DagRun.logical_date).in_(
                         (dm.dag_id, dm.next_dagrun) for dm in dag_models
-                    ),
+                    )
                 )
+                .options(load_only(DagRun.dag_id, DagRun.logical_date))
             )
             .unique()
             .all()
         )
+        existing_dagruns = {(x.dag_id, x.logical_date): x for x in existing_dagrun_objects}
+
+        # todo: AIP-76 we may want to update check existing to also check partitioned dag runs,
+        #  but the thing is, there is not actually a restriction that
+        #  we don't create new runs with the same partition key
+        #  so it's unclear whether we should / need to.
 
         # backfill runs are not created by scheduler and their concurrency is separate
         # so we exclude them here
-        dag_ids = (dm.dag_id for dm in dag_models)
         active_runs_of_dags = Counter(
             DagRun.active_runs_of_dags(
-                dag_ids=dag_ids,
+                dag_ids=(dm.dag_id for dm in dag_models),
                 exclude_backfill=True,
                 session=session,
             )
         )
 
         for dag_model in dag_models:
+            if dag_model.exceeds_max_non_backfill:
+                self.log.warning(
+                    "Dag run cannot be created; max active runs exceeded.",
+                    dag_id=dag_model.dag_id,
+                    max_active_runs=dag_model.max_active_runs,
+                    active_runs=active_runs_of_dags.get(dag_model.dag_id),
+                )
+                continue
             if dag_model.next_dagrun is None:
                 self.log.error(
                     "dag_model.next_dagrun is None; expected datetime",
@@ -1803,61 +1950,71 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 )
                 continue
 
-            serdag = _get_current_dag(dag_id=dag_model.dag_id, session=session)
+            serdag = self._get_current_dag(dag_id=dag_model.dag_id, session=session)
             if not serdag:
-                self.log.error("DAG '%s' not found in serialized_dag table", dag_model.dag_id)
+                self.log.error("Dag not found in serialized_dag table", dag_id=dag_model.dag_id)
                 continue
 
-            data_interval = get_next_data_interval(serdag.timetable, dag_model)
             # Explicitly check if the DagRun already exists. This is an edge case
             # where a Dag Run is created but `DagModel.next_dagrun` and `DagModel.next_dagrun_create_after`
             # are not updated.
             # We opted to check DagRun existence instead
             # of catching an Integrity error and rolling back the session i.e
-            # we need to set DagModel.next_dagrun_info if the DagRun already exists or if we
-            # create a new one. This is so that in the next scheduling loop we try to create new runs
-            # instead of falling in a loop of IntegrityError.
-            if (serdag.dag_id, dag_model.next_dagrun) not in existing_dagruns:
-                try:
-                    serdag.create_dagrun(
-                        run_id=serdag.timetable.generate_run_id(
-                            run_type=DagRunType.SCHEDULED,
-                            run_after=timezone.coerce_datetime(dag_model.next_dagrun),
-                            data_interval=data_interval,
-                        ),
-                        logical_date=dag_model.next_dagrun,
-                        data_interval=data_interval,
-                        run_after=dag_model.next_dagrun_create_after,
+            if dr := existing_dagruns.get((dag_model.dag_id, dag_model.next_dagrun)):
+                self.log.warning(
+                    "run already exists; skipping dagrun creation",
+                    dag_id=dag_model.dag_id,
+                    logical_date=dag_model.next_dagrun,
+                )
+                dag_model.calculate_dagrun_date_fields(dag=serdag, last_automated_run=dr)
+                continue
+
+            try:
+                next_info = serdag.timetable.next_run_info_from_dag_model(dag_model=dag_model)
+                data_interval = next_info.data_interval
+                logical_date = next_info.logical_date
+                partition_key = next_info.partition_key
+                run_after = next_info.run_after
+                # todo: AIP-76 partition date is not passed to dag run
+                #  See https://github.com/apache/airflow/issues/61167.
+                created_run = serdag.create_dagrun(
+                    run_id=serdag.timetable.generate_run_id(
                         run_type=DagRunType.SCHEDULED,
-                        triggered_by=DagRunTriggeredByType.TIMETABLE,
-                        state=DagRunState.QUEUED,
-                        creating_job_id=self.job.id,
-                        session=session,
-                    )
-                    active_runs_of_dags[serdag.dag_id] += 1
+                        run_after=run_after,
+                        data_interval=data_interval,
+                        partition_key=partition_key,
+                    ),
+                    logical_date=logical_date,
+                    data_interval=data_interval,
+                    run_after=run_after,
+                    run_type=DagRunType.SCHEDULED,
+                    triggered_by=DagRunTriggeredByType.TIMETABLE,
+                    state=DagRunState.QUEUED,
+                    creating_job_id=self.job.id,
+                    session=session,
+                    partition_key=partition_key,
+                )
+                active_runs_of_dags[dag_model.dag_id] += 1
+                dag_model.calculate_dagrun_date_fields(dag=serdag, last_automated_run=created_run)
+                self._set_exceeds_max_active_runs(
+                    dag_model=dag_model,
+                    session=session,
+                    active_non_backfill_runs=active_runs_of_dags[dag_model.dag_id],
+                )
 
-                # Exceptions like ValueError, ParamValidationError, etc. are raised by
-                # DagModel.create_dagrun() when dag is misconfigured. The scheduler should not
-                # crash due to misconfigured dags. We should log any exception encountered
-                # and continue to the next serdag.
-                except Exception:
-                    self.log.exception("Failed creating DagRun for %s", serdag.dag_id)
-                    # todo: if you get a database error here, continuing does not work because
-                    #  session needs rollback. you need either to make smaller transactions and
-                    #  commit after every dag run or use savepoints.
-                    #  https://github.com/apache/airflow/issues/59120
-                    continue
+            # Exceptions like ValueError, ParamValidationError, etc. are raised by
+            # DagModel.create_dagrun() when dag is misconfigured. The scheduler should not
+            # crash due to misconfigured dags. We should log any exception encountered
+            # and continue to the next serdag.
+            except Exception:
+                self.log.exception("Failed creating DagRun", dag_id=dag_model.dag_id)
+                # todo: if you get a database error here, continuing does not work because
+                #  session needs rollback. you need either to make smaller transactions and
+                #  commit after every dag run or use savepoints.
+                #  https://github.com/apache/airflow/issues/59120
 
-            self._update_next_dagrun_fields(
-                serdag=serdag,
-                dag_model=dag_model,
-                session=session,
-                active_non_backfill_runs=active_runs_of_dags[serdag.dag_id],
-                data_interval=data_interval,
-            )
-
-        # TODO[HA]: Should we do a session.flush() so we don't have to keep lots of state/object in
-        #  memory for larger dags? or expunge_all()
+            # TODO[HA]: Should we do a session.flush() so we don't have to keep lots of state/object in
+            #  memory for larger dags? or expunge_all()
 
     def _create_dag_runs_asset_triggered(
         self,
@@ -1872,7 +2029,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         }
 
         for dag_model in dag_models:
-            dag = _get_current_dag(dag_id=dag_model.dag_id, session=session)
+            dag = self._get_current_dag(dag_id=dag_model.dag_id, session=session)
             if not dag:
                 self.log.error("DAG '%s' not found in serialized_dag table", dag_model.dag_id)
                 continue
@@ -2002,12 +2159,11 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             ):
                 expected_start_date = dag_run.run_after
                 schedule_delay = dag_run.start_date - expected_start_date
-                # Publish metrics twice with backward compatible name, and then with tags
-                Stats.timing(f"dagrun.schedule_delay.{dag.dag_id}", schedule_delay)
-                Stats.timing(
+                DualStatsManager.timing(
                     "dagrun.schedule_delay",
                     schedule_delay,
-                    tags={"dag_id": dag.dag_id},
+                    tags={},
+                    extra_tags={"dag_id": dag.dag_id},
                 )
                 if span.is_recording():
                     span.add_event(
@@ -2180,17 +2336,12 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 session.flush()
                 self.log.info("Run %s of %s has timed-out", dag_run.run_id, dag_run.dag_id)
 
-                # TODO: questionable that this logic does what it is trying to do
-                #  I think its intent is, in part, to do this when it's the latest scheduled run
-                #  but it does not know that it is the latest. I think it could probably check that
-                #  logical date is equal to or greater than DagModel.next_dagrun, or something
-                if dag_run.state in State.finished_dr_states and dag_run.run_type == DagRunType.SCHEDULED:
-                    self._update_next_dagrun_fields(
-                        serdag=dag,
-                        dag_model=dag_model,
-                        session=session,
-                        data_interval=get_run_data_interval(dag.timetable, dag_run),
-                    )
+                if dag_run.state in State.finished_dr_states and dag_run.run_type in (
+                    DagRunType.SCHEDULED,
+                    DagRunType.MANUAL,
+                    DagRunType.ASSET_TRIGGERED,
+                ):
+                    self._set_exceeds_max_active_runs(dag_model=dag_model, session=session)
 
                 dag_run_reloaded = session.scalar(
                     select(DagRun)
@@ -2222,8 +2373,12 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 dag_run.notify_dagrun_state_changed(msg="timed_out")
                 if dag_run.end_date and dag_run.start_date:
                     duration = dag_run.end_date - dag_run.start_date
-                    Stats.timing(f"dagrun.duration.failed.{dag_run.dag_id}", duration)
-                    Stats.timing("dagrun.duration.failed", duration, tags={"dag_id": dag_run.dag_id})
+                    DualStatsManager.timing(
+                        "dagrun.duration.failed",
+                        duration,
+                        tags={},
+                        extra_tags={"dag_id": dag_run.dag_id},
+                    )
                 span.set_attribute("error", True)
                 if span.is_recording():
                     span.add_event(
@@ -2263,17 +2418,12 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             # TODO[HA]: Rename update_state -> schedule_dag_run, ?? something else?
             schedulable_tis, callback_to_run = dag_run.update_state(session=session, execute_callbacks=False)
 
-            # TODO: questionable that this logic does what it is trying to do
-            #  I think its intent is, in part, to do this when it's the latest scheduled run
-            #  but it does not know that it is the latest. I think it could probably check that
-            #  logical date is equal to or greater than DagModel.next_dagrun, or something
-            if dag_run.state in State.finished_dr_states and dag_run.run_type == DagRunType.SCHEDULED:
-                self._update_next_dagrun_fields(
-                    serdag=dag,
-                    dag_model=dag_model,
-                    session=session,
-                    data_interval=get_run_data_interval(dag.timetable, dag_run),
-                )
+            if dag_run.state in State.finished_dr_states and dag_run.run_type in (
+                DagRunType.SCHEDULED,
+                DagRunType.MANUAL,
+                DagRunType.ASSET_TRIGGERED,
+            ):
+                self._set_exceeds_max_active_runs(dag_model=dag_model, session=session)
 
             # This will do one query per dag run. We "could" build up a complex
             # query to update all the TIs across all the logical dates and dag
@@ -2290,47 +2440,6 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             dag_run.schedule_tis(schedulable_tis, session, max_tis_per_query=self.job.max_tis_per_query)
 
             return callback_to_run
-
-    def _update_next_dagrun_fields(
-        self,
-        *,
-        serdag: SerializedDAG,
-        dag_model: DagModel,
-        session: Session,
-        active_non_backfill_runs: int | None = None,
-        data_interval: DataInterval | None,
-    ):
-        """
-        Conditionally update fields next_dagrun and next_dagrun_create_after on dag table.
-
-        If dag exceeds max active runs, set to None.
-
-        If dag's timetable not schedulable, don't update.
-
-        Otherwise, update via ``DagModel.calculate_dagrun_date_fields``.
-        """
-        exceeds_max, active_runs = self._exceeds_max_active_runs(
-            dag_model=dag_model,
-            active_non_backfill_runs=active_non_backfill_runs,
-            session=session,
-        )
-        if exceeds_max:
-            self.log.info(
-                "Dag exceeds max_active_runs; not creating any more runs",
-                dag_id=dag_model.dag_id,
-                active_runs=active_runs,
-                max_active_runs=dag_model.max_active_runs,
-            )
-            # null out next_dagrun_create_after so scheduler will not examine this dag
-            # this is periodically reconsidered in the scheduler and dag processor.
-            dag_model.next_dagrun_create_after = None
-            return
-
-        # If the DAG never schedules skip save runtime
-        if not serdag.timetable.can_be_scheduled:
-            return
-
-        dag_model.calculate_dagrun_date_fields(dag=serdag, last_automated_dag_run=data_interval)
 
     def _verify_integrity_if_dag_changed(self, dag_run: DagRun, session: Session) -> bool:
         """
@@ -2351,10 +2460,20 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         dag_run.dag = self.scheduler_dag_bag.get_dag_for_run(dag_run=dag_run, session=session)
         if not dag_run.dag:
             return False
-        # Select all TIs in State.unfinished and update the dag_version_id
-        for ti in dag_run.task_instances:
-            if ti.state in State.unfinished:
-                ti.dag_version = latest_dag_version
+        # Bulk update dag_version_id for unfinished TIs instead of loading all TIs into memory.
+        # Use synchronize_session=False since we handle cache coherence via session.expire() below.
+        session.execute(
+            update(TI)
+            .where(
+                TI.dag_id == dag_run.dag_id,
+                TI.run_id == dag_run.run_id,
+                TI.state.in_(State.unfinished),
+            )
+            .values(dag_version_id=latest_dag_version.id),
+            execution_options={"synchronize_session": False},
+        )
+        # Expire task_instances relationship so next access fetches fresh data from DB
+        session.expire(dag_run, ["task_instances"])
         # Verify integrity also takes care of session.flush
         dag_run.verify_integrity(dag_version_id=latest_dag_version.id, session=session)
 
@@ -2508,19 +2627,23 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             .limit(1)
         )
 
-        query = session.query(Log).where(
-            Log.task_id == ti.task_id,
-            Log.dag_id == ti.dag_id,
-            Log.run_id == ti.run_id,
-            Log.map_index == ti.map_index,
-            Log.try_number == ti.try_number,
-            Log.event == TASK_STUCK_IN_QUEUED_RESCHEDULE_EVENT,
+        statement = (
+            select(func.count())
+            .select_from(Log)
+            .where(
+                Log.task_id == ti.task_id,
+                Log.dag_id == ti.dag_id,
+                Log.run_id == ti.run_id,
+                Log.map_index == ti.map_index,
+                Log.try_number == ti.try_number,
+                Log.event == TASK_STUCK_IN_QUEUED_RESCHEDULE_EVENT,
+            )
         )
 
         if last_running_time is not None:
-            query = query.where(Log.dttm > last_running_time)
+            statement = statement.where(Log.dttm > last_running_time)
 
-        count_result: int | None = query.count()
+        count_result: int | None = session.scalar(statement)
         return count_result if count_result is not None else 0
 
     previous_ti_metrics: dict[TaskInstanceState, dict[tuple[str, str, str], int]] = {}
@@ -2552,17 +2675,22 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             }
 
             for (dag_id, task_id, queue), count in ti_metrics.items():
-                Stats.gauge(f"ti.{state}.{queue}.{dag_id}.{task_id}", float(count))
-                Stats.gauge(
-                    f"ti.{state}", float(count), tags={"queue": queue, "dag_id": dag_id, "task_id": task_id}
+                DualStatsManager.gauge(
+                    f"ti.{state}",
+                    float(count),
+                    tags={},
+                    extra_tags={"queue": queue, "dag_id": dag_id, "task_id": task_id},
                 )
 
             for prev_key in self.previous_ti_metrics[state]:
                 # Reset previously exported stats that are no longer present in current metrics to zero
                 if prev_key not in ti_metrics:
-                    dag_id, task_id, queue = prev_key
-                    Stats.gauge(f"ti.{state}.{queue}.{dag_id}.{task_id}", 0)
-                    Stats.gauge(f"ti.{state}", 0, tags={"queue": queue, "dag_id": dag_id, "task_id": task_id})
+                    DualStatsManager.gauge(
+                        f"ti.{state}",
+                        0,
+                        tags={},
+                        extra_tags={"queue": queue, "dag_id": dag_id, "task_id": task_id},
+                    )
 
             self.previous_ti_metrics[state] = ti_metrics
 
@@ -2579,27 +2707,46 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         with DebugTrace.start_span(span_name="emit_pool_metrics", component="SchedulerJobRunner") as span:
             pools = Pool.slots_stats(session=session)
             for pool_name, slot_stats in pools.items():
-                Stats.gauge(f"pool.open_slots.{pool_name}", slot_stats["open"])
-                Stats.gauge(f"pool.queued_slots.{pool_name}", slot_stats["queued"])
-                Stats.gauge(f"pool.running_slots.{pool_name}", slot_stats["running"])
-                Stats.gauge(f"pool.deferred_slots.{pool_name}", slot_stats["deferred"])
-                Stats.gauge(f"pool.scheduled_slots.{pool_name}", slot_stats["scheduled"])
-
-                # Same metrics with tagging
-                Stats.gauge("pool.open_slots", slot_stats["open"], tags={"pool_name": pool_name})
-                Stats.gauge("pool.queued_slots", slot_stats["queued"], tags={"pool_name": pool_name})
-                Stats.gauge("pool.running_slots", slot_stats["running"], tags={"pool_name": pool_name})
-                Stats.gauge("pool.deferred_slots", slot_stats["deferred"], tags={"pool_name": pool_name})
-                Stats.gauge("pool.scheduled_slots", slot_stats["scheduled"], tags={"pool_name": pool_name})
+                normalized_pool_name = normalize_pool_name_for_stats(pool_name)
+                DualStatsManager.gauge(
+                    "pool.open_slots",
+                    slot_stats["open"],
+                    tags={},
+                    extra_tags={"pool_name": normalized_pool_name},
+                )
+                DualStatsManager.gauge(
+                    "pool.queued_slots",
+                    slot_stats["queued"],
+                    tags={},
+                    extra_tags={"pool_name": normalized_pool_name},
+                )
+                DualStatsManager.gauge(
+                    "pool.running_slots",
+                    slot_stats["running"],
+                    tags={},
+                    extra_tags={"pool_name": normalized_pool_name},
+                )
+                DualStatsManager.gauge(
+                    "pool.deferred_slots",
+                    slot_stats["deferred"],
+                    tags={},
+                    extra_tags={"pool_name": normalized_pool_name},
+                )
+                DualStatsManager.gauge(
+                    "pool.scheduled_slots",
+                    slot_stats["scheduled"],
+                    tags={},
+                    extra_tags={"pool_name": normalized_pool_name},
+                )
 
                 span.set_attributes(
                     {
                         "category": "scheduler",
-                        f"pool.open_slots.{pool_name}": slot_stats["open"],
-                        f"pool.queued_slots.{pool_name}": slot_stats["queued"],
-                        f"pool.running_slots.{pool_name}": slot_stats["running"],
-                        f"pool.deferred_slots.{pool_name}": slot_stats["deferred"],
-                        f"pool.scheduled_slots.{pool_name}": slot_stats["scheduled"],
+                        f"pool.open_slots.{normalized_pool_name}": slot_stats["open"],
+                        f"pool.queued_slots.{normalized_pool_name}": slot_stats["queued"],
+                        f"pool.running_slots.{normalized_pool_name}": slot_stats["running"],
+                        f"pool.deferred_slots.{normalized_pool_name}": slot_stats["deferred"],
+                        f"pool.scheduled_slots.{normalized_pool_name}": slot_stats["scheduled"],
                     }
                 )
 
@@ -3063,7 +3210,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
 
         return executor
 
-    def _exceeds_max_active_runs(
+    def _set_exceeds_max_active_runs(
         self,
         *,
         dag_model: DagModel,
@@ -3077,8 +3224,8 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 session=session,
             )
             active_non_backfill_runs = runs_dict.get(dag_model.dag_id, 0)
-        exceeds = active_non_backfill_runs >= dag_model.max_active_runs
-        return exceeds, active_non_backfill_runs
+
+        dag_model.exceeds_max_non_backfill = active_non_backfill_runs >= (dag_model.max_active_runs or 0)
 
 
 # Backcompat for older versions of task sdk import SchedulerDagBag from here

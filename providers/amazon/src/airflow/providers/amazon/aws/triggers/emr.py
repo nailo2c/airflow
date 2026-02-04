@@ -82,10 +82,11 @@ class EmrCreateJobFlowTrigger(AwsBaseWaiterTrigger):
         aws_conn_id: str | None = None,
         waiter_delay: int = 30,
         waiter_max_attempts: int = 60,
+        waiter_name: str = "job_flow_waiting",
     ):
         super().__init__(
             serialized_fields={"job_flow_id": job_flow_id},
-            waiter_name="job_flow_waiting",
+            waiter_name=waiter_name,
             waiter_args={"ClusterId": job_flow_id},
             failure_message="JobFlow creation failed",
             status_message="JobFlow creation in progress",
@@ -351,8 +352,8 @@ class EmrServerlessStartJobTrigger(AwsBaseWaiterTrigger):
             failure_message="Serverless Job failed",
             status_message="Serverless Job status is",
             status_queries=["jobRun.state", "jobRun.stateDetails"],
-            return_key="job_id",
-            return_value=job_id,
+            return_key="job_details",
+            return_value={"application_id": application_id, "job_id": job_id},
             waiter_delay=waiter_delay,
             waiter_max_attempts=waiter_max_attempts,
             aws_conn_id=aws_conn_id,
