@@ -119,20 +119,10 @@ class ADLSToGCSOperator(ADLSListOperator):
         google_impersonation_chain: str | Sequence[str] | None = None,
         **kwargs,
     ) -> None:
-        file_system_name = kwargs.pop("file_system_name", None)
-        if file_system_name is None:
-            raise TypeError(
-                "The 'file_system_name' parameter is required. "
-                "ADLSListOperator has been migrated from Azure Data Lake Storage Gen1 (retired) "
-                "to Gen2, which requires specifying a file system name. "
-                "Please add file_system_name='your-container-name' to your operator instantiation."
-            )
-
         super().__init__(
-            file_system_name=file_system_name,
             path=src_adls,
             azure_data_lake_conn_id=azure_data_lake_conn_id,
-            **kwargs,
+            **self._validate_kwargs(kwargs),
         )
 
         self.src_adls = src_adls
@@ -141,6 +131,18 @@ class ADLSToGCSOperator(ADLSListOperator):
         self.gcp_conn_id = gcp_conn_id
         self.gzip = gzip
         self.google_impersonation_chain = google_impersonation_chain
+
+    @staticmethod
+    def _validate_kwargs(kwargs: dict) -> dict:
+        file_system_name = kwargs.pop("file_system_name", None)
+        if file_system_name is None:
+            raise TypeError(
+                "The 'file_system_name' parameter is required. "
+                "ADLSListOperator has been migrated from Azure Data Lake Storage Gen1 (retired) "
+                "to Gen2, which requires specifying a file system name. "
+                "Please add file_system_name='your-container-name' to your operator instantiation."
+            )
+        return {"file_system_name": file_system_name, **kwargs}
 
     def execute(self, context: Context):
         # use the super to list all files in an Azure Data Lake path
