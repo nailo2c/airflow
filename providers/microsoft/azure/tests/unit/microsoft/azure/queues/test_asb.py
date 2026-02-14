@@ -74,7 +74,5 @@ class TestMessageQueueTriggerIntegration:
         from airflow.providers.microsoft.azure.triggers.message_bus import AzureServiceBusQueueTrigger
 
         with patch("airflow.providers.microsoft.azure.triggers.message_bus.MessageHook"):
-            trigger = MessageQueueTrigger(
-                scheme="azure+servicebus", queues=["test_queue"]
-            )
+            trigger = MessageQueueTrigger(scheme="azure+servicebus", queues=["test_queue"])
             assert isinstance(trigger.trigger, AzureServiceBusQueueTrigger)
