@@ -404,4 +404,5 @@ def get_provider_info():
                 },
             }
         },
+        "queues": ["airflow.providers.microsoft.azure.queues.asb.AzureServiceBusMessageQueueProvider"],
     }

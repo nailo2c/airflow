@@ -35,6 +35,7 @@
     :caption: Guides
 
     Connection types <connections/index>
+    Message queues <message-queues/index>
     Operators <operators/index>
     Transfers <transfer/index>
     Filesystems <filesystems/index>
