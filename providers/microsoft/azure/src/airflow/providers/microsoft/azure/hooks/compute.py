@@ -22,7 +22,10 @@ from typing import Any, cast
 
 from azure.common.client_factory import get_client_from_auth_file, get_client_from_json_dict
 from azure.identity import ClientSecretCredential, DefaultAzureCredential
-from azure.identity.aio import ClientSecretCredential as AsyncClientSecretCredential
+from azure.identity.aio import (
+    ClientSecretCredential as AsyncClientSecretCredential,
+    DefaultAzureCredential as AsyncDefaultAzureCredential,
+)
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.compute.aio import ComputeManagementClient as AsyncComputeManagementClient
 
@@ -50,6 +53,7 @@ class AzureComputeHook(AzureBaseHook):
 
     def __init__(self, azure_conn_id: str = default_conn_name) -> None:
         super().__init__(sdk_client=ComputeManagementClient, conn_id=azure_conn_id)
+        self._async_conn: AsyncComputeManagementClient | None = None
 
     @cached_property
     def connection(self) -> ComputeManagementClient:
@@ -178,18 +182,19 @@ class AzureComputeHook(AzureBaseHook):
         DefaultAzureCredential auth.  Legacy ``key_path`` / ``key_json``
         auth files are not supported in the async path.
         """
-        if hasattr(self, "_async_conn") and self._async_conn is not None:
+        if self._async_conn is not None:
             return self._async_conn
 
         conn = await get_async_connection(self.conn_id)
         tenant = conn.extra_dejson.get("tenantId")
         subscription_id = cast("str", conn.extra_dejson.get("subscriptionId"))
 
+        credential: AsyncClientSecretCredential | AsyncDefaultAzureCredential
         if conn.login and conn.password and tenant:
-            credential: AsyncClientSecretCredential = AsyncClientSecretCredential(
-                client_id=cast("str", conn.login),
-                client_secret=cast("str", conn.password),
-                tenant_id=cast("str", tenant),
+            credential = AsyncClientSecretCredential(
+                client_id=conn.login,
+                client_secret=conn.password,
+                tenant_id=tenant,
             )
         else:
             managed_identity_client_id = conn.extra_dejson.get("managed_identity_client_id")
@@ -222,7 +227,7 @@ class AzureComputeHook(AzureBaseHook):
 
     async def close(self) -> None:
         """Close the async connection."""
-        if hasattr(self, "_async_conn") and self._async_conn is not None:
+        if self._async_conn is not None:
             await self._async_conn.close()
             self._async_conn = None
 
