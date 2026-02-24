@@ -35,6 +35,13 @@ def get_provider_info():
                 "tags": ["azure"],
             },
             {
+                "integration-name": "Microsoft Azure Compute",
+                "external-doc-url": "https://azure.microsoft.com/en-us/products/virtual-machines/",
+                "how-to-guide": ["/docs/apache-airflow-providers-microsoft-azure/operators/compute.rst"],
+                "logo": "/docs/integration-logos/Microsoft-Azure.png",
+                "tags": ["azure"],
+            },
+            {
                 "integration-name": "Microsoft Azure Blob Storage",
                 "external-doc-url": "https://azure.microsoft.com/en-us/services/storage/blobs/",
                 "how-to-guide": ["/docs/apache-airflow-providers-microsoft-azure/sensors/wasb_sensors.rst"],
@@ -136,6 +143,10 @@ def get_provider_info():
         ],
         "operators": [
             {
+                "integration-name": "Microsoft Azure Compute",
+                "python-modules": ["airflow.providers.microsoft.azure.operators.compute"],
+            },
+            {
                 "integration-name": "Microsoft Azure Data Lake Storage",
                 "python-modules": ["airflow.providers.microsoft.azure.operators.adls"],
             },
@@ -182,6 +193,10 @@ def get_provider_info():
         ],
         "sensors": [
             {
+                "integration-name": "Microsoft Azure Compute",
+                "python-modules": ["airflow.providers.microsoft.azure.sensors.compute"],
+            },
+            {
                 "integration-name": "Microsoft Azure Cosmos DB",
                 "python-modules": ["airflow.providers.microsoft.azure.sensors.cosmos"],
             },
@@ -203,6 +218,10 @@ def get_provider_info():
             "airflow.providers.microsoft.azure.fs.msgraph",
         ],
         "hooks": [
+            {
+                "integration-name": "Microsoft Azure Compute",
+                "python-modules": ["airflow.providers.microsoft.azure.hooks.compute"],
+            },
             {
                 "integration-name": "Microsoft Azure Container Instances",
                 "python-modules": [
@@ -266,6 +285,10 @@ def get_provider_info():
         ],
         "triggers": [
             {
+                "integration-name": "Microsoft Azure Compute",
+                "python-modules": ["airflow.providers.microsoft.azure.triggers.compute"],
+            },
+            {
                 "integration-name": "Microsoft Azure Data Factory",
                 "python-modules": ["airflow.providers.microsoft.azure.triggers.data_factory"],
             },
@@ -322,6 +345,10 @@ def get_provider_info():
             {
                 "hook-class-name": "airflow.providers.microsoft.azure.hooks.base_azure.AzureBaseHook",
                 "connection-type": "azure",
+            },
+            {
+                "hook-class-name": "airflow.providers.microsoft.azure.hooks.compute.AzureComputeHook",
+                "connection-type": "azure_compute",
             },
             {
                 "hook-class-name": "airflow.providers.microsoft.azure.hooks.adx.AzureDataExplorerHook",

@@ -474,6 +474,8 @@ dbtapquerycmd
 dbutils
 ddl
 de
+deallocate
+deallocated
 Debounce
 debuggability
 declaratively
