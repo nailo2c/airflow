@@ -56,7 +56,7 @@ class AzureVirtualMachineStateTrigger(BaseTrigger):
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize AzureVirtualMachineStateTrigger arguments and classpath."""
         return (
-            "airflow.providers.microsoft.azure.triggers.compute.AzureVirtualMachineStateTrigger",
+            f"{self.__class__.__module__}.{self.__class__.__name__}",
             {
                 "resource_group_name": self.resource_group_name,
                 "vm_name": self.vm_name,
@@ -88,3 +88,4 @@ class AzureVirtualMachineStateTrigger(BaseTrigger):
                     await asyncio.sleep(self.poke_interval)
         except Exception as e:
             yield TriggerEvent({"status": "error", "message": str(e)})
+            return

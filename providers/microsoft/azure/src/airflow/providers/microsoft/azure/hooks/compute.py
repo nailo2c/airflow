@@ -58,7 +58,7 @@ class AzureComputeHook(AzureBaseHook):
     def connection(self) -> ComputeManagementClient:
         return self.get_conn()
 
-    def get_conn(self) -> Any:
+    def get_conn(self) -> ComputeManagementClient:
         """
         Authenticate the resource using the connection id passed during init.
 

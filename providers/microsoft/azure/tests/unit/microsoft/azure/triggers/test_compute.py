@@ -41,15 +41,20 @@ class TestAzureVirtualMachineStateTrigger:
             poke_interval=POKE_INTERVAL,
         )
 
-        class_path, args = trigger.serialize()
+        actual = trigger.serialize()
+
+        assert isinstance(actual, tuple)
         assert (
-            class_path == "airflow.providers.microsoft.azure.triggers.compute.AzureVirtualMachineStateTrigger"
+            actual[0]
+            == f"{AzureVirtualMachineStateTrigger.__module__}.{AzureVirtualMachineStateTrigger.__name__}"
         )
-        assert args["resource_group_name"] == RESOURCE_GROUP
-        assert args["vm_name"] == VM_NAME
-        assert args["target_state"] == TARGET_STATE
-        assert args["azure_conn_id"] == CONN_ID
-        assert args["poke_interval"] == POKE_INTERVAL
+        assert actual[1] == {
+            "resource_group_name": RESOURCE_GROUP,
+            "vm_name": VM_NAME,
+            "target_state": TARGET_STATE,
+            "azure_conn_id": CONN_ID,
+            "poke_interval": POKE_INTERVAL,
+        }
 
     @pytest.mark.asyncio
     @mock.patch(
