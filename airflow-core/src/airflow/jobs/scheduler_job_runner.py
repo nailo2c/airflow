@@ -97,6 +97,7 @@ from airflow.models.serialized_dag import SerializedDagModel
 from airflow.models.taskinstance import TaskInstance
 from airflow.models.team import Team
 from airflow.models.trigger import TRIGGER_FAIL_REPR, Trigger, TriggerFailureReason
+from airflow.observability.metrics import stats_utils
 from airflow.observability.trace import DebugTrace, Trace, add_debug_span
 from airflow.serialization.definitions.assets import SerializedAssetUniqueKey
 from airflow.serialization.definitions.notset import NOTSET
@@ -1322,11 +1323,8 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             DagRun.set_active_spans(active_spans=self.active_spans)
             BaseExecutor.set_active_spans(active_spans=self.active_spans)
 
-            Stats.initialize(
-                is_statsd_datadog_enabled=conf.getboolean("metrics", "statsd_datadog_enabled"),
-                is_statsd_on=conf.getboolean("metrics", "statsd_on"),
-                is_otel_on=conf.getboolean("metrics", "otel_on"),
-            )
+            stats_factory = stats_utils.get_stats_factory(Stats)
+            Stats.initialize(factory=stats_factory)
 
             self._run_scheduler_loop()
 
@@ -1848,6 +1846,13 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 creating_job_id=self.job.id,
                 session=session,
             )
+            asset_events = session.scalars(
+                select(AssetEvent).where(
+                    PartitionedAssetKeyLog.asset_partition_dag_run_id == apdr.id,
+                    PartitionedAssetKeyLog.asset_event_id == AssetEvent.id,
+                )
+            )
+            dag_run.consumed_asset_events.extend(asset_events)
             session.flush()
             apdr.created_dag_run_id = dag_run.id
             session.flush()
@@ -1979,6 +1984,16 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                     logical_date=dag_model.next_dagrun,
                 )
                 dag_model.calculate_dagrun_date_fields(dag=serdag, last_automated_run=dr)
+                continue
+
+            if (
+                dag_model.allowed_run_types is not None
+                and DagRunType.SCHEDULED not in dag_model.allowed_run_types
+            ):
+                self.log.warning(
+                    "Dag does not allow scheduled runs; skipping",
+                    dag_id=dag_model.dag_id,
+                )
                 continue
 
             try:
