@@ -30,7 +30,6 @@ from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.compute.aio import ComputeManagementClient as AsyncComputeManagementClient
 
 from airflow.providers.common.compat.connection import get_async_connection
-from airflow.providers.common.compat.sdk import AirflowException
 from airflow.providers.microsoft.azure.hooks.base_azure import AzureBaseHook
 from airflow.providers.microsoft.azure.utils import (
     get_async_default_azure_credential,
@@ -71,7 +70,7 @@ class AzureComputeHook(AzureBaseHook):
         key_path = conn.extra_dejson.get("key_path")
         if key_path:
             if not key_path.endswith(".json"):
-                raise AirflowException("Unrecognised extension for key file.")
+                raise ValueError("Unrecognised extension for key file.")
             self.log.info("Getting connection using a JSON key file.")
             return get_client_from_auth_file(client_class=self.sdk_client, auth_path=key_path)
 

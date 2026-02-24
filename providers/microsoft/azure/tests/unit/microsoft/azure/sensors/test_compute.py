@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from airflow.providers.common.compat.sdk import AirflowException, TaskDeferred
+from airflow.providers.common.compat.sdk import TaskDeferred
 from airflow.providers.microsoft.azure.sensors.compute import AzureVirtualMachineStateSensor
 
 RESOURCE_GROUP = "test-rg"
@@ -116,7 +116,7 @@ class TestAzureVirtualMachineStateSensor:
             vm_name=VM_NAME,
             target_state="running",
         )
-        with pytest.raises(AirflowException, match="Something went wrong"):
+        with pytest.raises(RuntimeError, match="Something went wrong"):
             sensor.execute_complete(
                 context=None,
                 event={"status": "error", "message": "Something went wrong"},

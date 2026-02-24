@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from airflow.providers.common.compat.sdk import AirflowException, BaseSensorOperator, conf
+from airflow.providers.common.compat.sdk import BaseSensorOperator, conf
 from airflow.providers.microsoft.azure.hooks.compute import AzureComputeHook
 from airflow.providers.microsoft.azure.triggers.compute import AzureVirtualMachineStateTrigger
 
@@ -108,7 +108,7 @@ class AzureVirtualMachineStateSensor(BaseSensorOperator):
         """
         if event:
             if event["status"] == "error":
-                raise AirflowException(event["message"])
+                raise RuntimeError(event["message"])
             self.log.info(event["message"])
         else:
-            raise AirflowException("Did not receive valid event from the triggerer")
+            raise RuntimeError("Did not receive valid event from the triggerer")
