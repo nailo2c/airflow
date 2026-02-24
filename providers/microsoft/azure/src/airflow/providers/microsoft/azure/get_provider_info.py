@@ -375,6 +375,32 @@ def get_provider_info():
             {
                 "hook-class-name": "airflow.providers.microsoft.azure.hooks.compute.AzureComputeHook",
                 "connection-type": "azure_compute",
+                "ui-field-behaviour": {
+                    "hidden-fields": ["schema", "port", "host"],
+                    "relabeling": {"login": "Client ID", "password": "Client Secret"},
+                    "placeholders": {
+                        "extra": '{"key_path": "path to json file for auth", "key_json": "specifies json dict for auth"}',
+                        "login": "client_id (token credentials auth)",
+                        "password": "secret (token credentials auth)",
+                        "tenantId": "tenantId (token credentials auth)",
+                        "subscriptionId": "subscriptionId (token credentials auth)",
+                    },
+                },
+                "conn-fields": {
+                    "tenantId": {"label": "Azure Tenant ID", "schema": {"type": ["string", "null"]}},
+                    "subscriptionId": {
+                        "label": "Azure Subscription ID",
+                        "schema": {"type": ["string", "null"]},
+                    },
+                    "managed_identity_client_id": {
+                        "label": "Managed Identity Client ID",
+                        "schema": {"type": ["string", "null"]},
+                    },
+                    "workload_identity_tenant_id": {
+                        "label": "Workload Identity Tenant ID",
+                        "schema": {"type": ["string", "null"]},
+                    },
+                },
             },
             {
                 "hook-class-name": "airflow.providers.microsoft.azure.hooks.adx.AzureDataExplorerHook",
