@@ -93,12 +93,8 @@ class AzureDataFactoryRunPipelineOperator(BaseOperator):
     :param wait_for_termination: Flag to wait on a pipeline run's termination.  By default, this feature is
         enabled but could be disabled to perform an asynchronous wait for a long-running pipeline execution
         using the ``AzureDataFactoryPipelineRunSensor``.
-    :param resource_group_name: The resource group name. If a value is not passed in to the operator, the
-        ``AzureDataFactoryHook`` will attempt to use the resource group name provided in the corresponding
-        connection.
-    :param factory_name: The data factory name. If a value is not passed in to the operator, the
-        ``AzureDataFactoryHook`` will attempt to use the factory name provided in the corresponding
-        connection.
+    :param resource_group_name: The resource group name. Required.
+    :param factory_name: The data factory name. Required.
     :param reference_pipeline_run_id: The pipeline run identifier. If this run ID is specified the parameters
         of the specified run will be used to create a new run.
     :param is_recovery: Recovery mode flag. If recovery mode is set to `True`, the specified referenced

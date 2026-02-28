@@ -42,8 +42,8 @@ with DAG(
         "retries": 1,
         "retry_delay": timedelta(minutes=3),
         "azure_data_factory_conn_id": "azure_data_factory",
-        "factory_name": "my-data-factory",  # This can also be specified in the ADF connection.
-        "resource_group_name": "my-resource-group",  # This can also be specified in the ADF connection.
+        "factory_name": "my-data-factory",  # Can also be passed directly to each operator.
+        "resource_group_name": "my-resource-group",  # Can also be passed directly to each operator.
     },
 ) as dag:
     begin = EmptyOperator(task_id="begin")
