@@ -39,8 +39,8 @@ class AzureDataFactoryPipelineRunStatusSensor(BaseSensorOperator):
 
     :param azure_data_factory_conn_id: The connection identifier for connecting to Azure Data Factory.
     :param run_id: The pipeline run identifier.
-    :param resource_group_name: The resource group name.
-    :param factory_name: The data factory name.
+    :param resource_group_name: The resource group name. Required.
+    :param factory_name: The data factory name. Required.
     :param deferrable: Run sensor in the deferrable mode.
     """
 
