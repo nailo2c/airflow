@@ -33,7 +33,7 @@ from airflow.cli.cli_config import (
     GroupCommand,
     lazy_load_command,
 )
-from airflow.providers.common.compat.sdk import conf
+from airflow.configuration import conf
 
 if TYPE_CHECKING:
     import argparse
